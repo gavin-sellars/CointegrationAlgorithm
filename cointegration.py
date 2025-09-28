@@ -1,3 +1,5 @@
+# I think there's an error with the dates, look into that
+
 import os
 import pickle
 import numpy as np
@@ -43,9 +45,6 @@ class CointegrationPairsTrader:
         self.max_positions = 20      # Maximum concurrent positions
         
     def get_expanded_stock_universe(self):
-        """
-        Create a diverse universe of stocks from different sectors
-        """
         stocks = {
             'Technology': [
                 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'ADBE', 'CRM',
@@ -129,21 +128,14 @@ class CointegrationPairsTrader:
     def load_or_download_data(self, stock_list, batch_size=10, delay=1.0, use_existing=True):
         """
         Load existing data if available, or download new data if requested.
-        
-        Args:
-            stock_list (list): List of tickers to download if needed
-            batch_size (int): Batch size for downloading
-            delay (float): Pause between downloads
-            use_existing (bool): If True, try to use cached data without downloading
         """
-        # 1) Try to load existing pickle
+        # Try to load existing pickle
         if os.path.exists(self.data_file):
             try:
                 with open(self.data_file, 'rb') as f:
                     self.price_data = pickle.load(f)
                 print(f"Loaded cached data: {self.price_data.shape[1]} tickers, {len(self.price_data)} rows.")
 
-                # If user wants to skip downloads, stop here
                 if use_existing:
                     return True
 
@@ -153,17 +145,16 @@ class CointegrationPairsTrader:
         else:
             self.price_data = pd.DataFrame()
 
-        print(f"Downloading data from {self.start_date.date()} to {self.end_date.date()}…")
+        print(f"Downloading data from {self.start_date.date()} to {self.end_date.date()}...")
 
         any_success = False
 
-        # 2) Download in batches if needed
+        # Download in batches if needed
         for i in range(0, len(stock_list), batch_size):
             batch = stock_list[i : i + batch_size]
 
             for ticker in batch:
                 try:
-                    # Rate-limit pause
                     time.sleep(delay + random.uniform(0, 0.5))
 
                     df = yf.Ticker(ticker).history(
@@ -188,12 +179,12 @@ class CointegrationPairsTrader:
                         with open(self.data_file, 'wb') as f:
                             pickle.dump(self.price_data, f)
 
-                        print(f"✓ Downloaded & saved: {ticker} ({len(df)} rows). Now have {self.price_data.shape[1]} tickers total.")
+                        print(f"Downloaded & saved: {ticker} ({len(df)} rows). Now have {self.price_data.shape[1]} tickers total.")
                         any_success = True
                     else:
-                        print(f"✗ No data (or too few rows) for {ticker}. Skipping.")
+                        print(f"No data (or too few rows) for {ticker}. Skipping.")
                 except Exception as e:
-                    print(f"✗ Error downloading {ticker}: {e}. Skipping.")
+                    print(f"Error downloading {ticker}: {e}. Skipping.")
 
             if i + batch_size < len(stock_list):
                 time.sleep(delay)
@@ -203,7 +194,6 @@ class CointegrationPairsTrader:
         else:
             print("No valid data downloaded.")
             return False
-
 
     def find_cointegrated_pairs(self, sector_dict, max_pairs_to_test=5000):
         """
@@ -374,12 +364,28 @@ class CointegrationPairsTrader:
         spread_std = spread.rolling(window=window).std()
         z_score = (spread - spread_mean) / spread_std
         return z_score, spread
+
+    def has_sufficient_capital(self, required_capital):
+        """Check if we have sufficient capital for a new position"""
+        return (self.cash - required_capital) >= 0 and len(self.open_positions) < self.max_positions
+    
+    def allocate_capital(self, amount):
+            """Allocate capital for a new position"""
+            if self.has_sufficient_capital(amount):
+                self.cash -= amount
+                self.used_capital += amount
+                return True
+            return False
+
+    def free_capital(self, amount):
+        """Free up capital when closing a position"""
+        self.cash += amount
+        self.used_capital -= amount
     
     def backtest_pair(self, pair_info, lookback_window=20):
         """
         Backtest a single cointegrated pair with share-based sizing, capital tracking,
-        warm-up period, spread threshold, and equity curve construction.
-        Returns: trades (list), z_score (Series), spread (Series), positions (list)
+        warm-up period, spread threshold, and equity curve construction
         """
         stock1 = pair_info['stock1']
         stock2 = pair_info['stock2']
@@ -387,7 +393,9 @@ class CointegrationPairsTrader:
 
         # Align prices and drop NaNs
         data = self.price_data[[stock1, stock2]].dropna()
-        if len(data) < 252:  # Need at least 1 year of data
+
+        # Want at least a year of data
+        if len(data) < 252:
             return [], pd.Series(dtype=float), pd.Series(dtype=float), []
             
         p1 = data[stock1]
@@ -406,6 +414,7 @@ class CointegrationPairsTrader:
         # Track positions for this specific pair
         current_position = 0
         position_entry = None
+        position_id = None
 
         for i in range(len(z_score)):
             date = z_score.index[i]
@@ -419,18 +428,13 @@ class CointegrationPairsTrader:
                 positions.append(0)
                 continue
 
-            # Thresholds
-            entry_thresh = self.entry_threshold
-            exit_thresh = self.exit_threshold
-            epsilon = 0.5
-
             # EXIT logic
             if current_position != 0 and position_entry is not None:
                 exit_signal = False
                 reason = ''
                 
                 # Mean reversion
-                if abs(current_z) < exit_thresh:
+                if abs(current_z) < self.exit_threshold:
                     exit_signal = True
                     reason = 'mean_reversion'
                 # Stop loss
@@ -439,19 +443,20 @@ class CointegrationPairsTrader:
                     exit_signal = True
                     reason = 'stop_loss'
                 # Reversal
-                elif (current_position == 1 and current_z > entry_thresh) or \
-                     (current_position == -1 and current_z < -entry_thresh):
+                elif (current_position == 1 and current_z > self.entry_threshold) or \
+                     (current_position == -1 and current_z < -self.entry_threshold):
                     exit_signal = True
                     reason = 'reversal'
 
                 if exit_signal:
-                    # Compute P&L
-                    delta1 = (price1 - position_entry['price1']) * position_entry['shares1']
-                    delta2 = (price2 - position_entry['price2']) * position_entry['shares2']
-                    if position_entry['position'] == -1:
-                        delta1 *= -1
-                        delta2 *= -1
-                    pnl = delta1 - delta2
+                    # Calculate P&L with hedge ratio
+                    stock1_pnl = (price1 - position_entry['price1']) * position_entry['shares1']
+                    stock2_pnl = (price2 - position_entry['price2']) * position_entry['shares2']
+                    
+                    if position_entry['position'] == 1:  # Long stock1, short stock2
+                        pnl = stock1_pnl - stock2_pnl
+                    else:  # Short stock1, long stock2
+                        pnl = -stock1_pnl + stock2_pnl
 
                     trades.append({
                         'pair': f"{stock1}-{stock2}",
@@ -467,36 +472,53 @@ class CointegrationPairsTrader:
                         'exit_reason': reason
                     })
                     
+                    # Free up capital and remove from open positions
+                    self.free_capital(position_entry['notional'])
+                    if position_id in self.open_positions:
+                        self.open_positions.remove(position_id)
+                    
                     current_position = 0
                     position_entry = None
+                    position_id = None
 
-            # ENTRY logic
+            # ENTRY logic 
             if current_position == 0:
-                if abs(current_z) > entry_thresh and abs(current_spread) >= epsilon:
-                    # Position sizing
-                    notional = self.notional
-                    amt1 = notional / (price1 + abs(hedge_ratio) * price2)
-                    shares1 = amt1 / price1
-                    shares2 = abs(hedge_ratio) * shares1
-                    pos = -1 if current_z > entry_thresh else 1
+                if abs(current_z) > self.entry_threshold and abs(current_spread) >= 0.5:
+                    required_capital = self.notional
                     
-                    position_entry = {
-                        'date': date,
-                        'stock1': stock1,
-                        'stock2': stock2,
-                        'price1': price1,
-                        'price2': price2,
-                        'shares1': shares1,
-                        'shares2': shares2,
-                        'position': pos,
-                        'notional': notional,
-                        'z': current_z
-                    }
-                    current_position = pos
+                    # Check if we have sufficient capital and haven't exceeded max positions
+                    if self.has_sufficient_capital(required_capital):
+                        # Allocate capital
+                        if self.allocate_capital(required_capital):
+                            # Fixed position sizing with proper hedge ratio application
+                            total_exposure = price1 + abs(hedge_ratio) * price2
+                            shares1 = self.notional / total_exposure
+                            shares2 = abs(hedge_ratio) * shares1
+                            
+                            pos = -1 if current_z > self.entry_threshold else 1
+                            
+                            position_entry = {
+                                'date': date,
+                                'stock1': stock1,
+                                'stock2': stock2,
+                                'price1': price1,
+                                'price2': price2,
+                                'shares1': shares1,
+                                'shares2': shares2,
+                                'position': pos,
+                                'notional': self.notional,
+                                'z': current_z
+                            }
+                            current_position = pos
+                            
+                            # Track this position globally
+                            position_id = f"{stock1}-{stock2}-{date}"
+                            self.open_positions.append(position_id)
 
             positions.append(current_position)
 
         return trades, z_score, spread, positions
+
 
     def calculate_performance(self):
         """Generate performance metrics based on trades."""
@@ -536,6 +558,8 @@ class CointegrationPairsTrader:
         print("BACKTEST RESULTS SUMMARY")
         print("------------------------------------------------------------")
         print(f"Initial Capital: ${self.initial_capital:,.2f}")
+        print(f"Final Cash: ${self.cash:,.2f}")
+        print(f"Used Capital: ${self.used_capital:,.2f}")
         print(f"Total P&L: ${total_pnl:,.2f}")
         print(f"Total Return: {total_return*100:.2f}%")
         print(f"Annualized Return: {annualized_return*100:.2f}%")
@@ -547,6 +571,7 @@ class CointegrationPairsTrader:
         print(f"Average Win: ${avg_win:,.2f}")
         print(f"Average Loss: ${avg_loss:,.2f}")
         print(f"Profit Factor: {profit_factor:.2f}")
+        print(f"Max Concurrent Positions Used: {len(self.open_positions)}")
 
     def is_cross_sector_trade(self, pair_name):
         """Check if a trade is cross-sector"""
@@ -565,35 +590,40 @@ class CointegrationPairsTrader:
         return drawdown.min()
 
     def run_backtest(self):
-        """Run the complete backtest process"""
+        """Run the complete backtest process with proper capital management"""
         print("=" * 80)
         print("STARTING COMPREHENSIVE COINTEGRATION PAIRS TRADING BACKTEST")
         print("=" * 80)
+        
+        # Reset capital tracking for fresh backtest
+        self.cash = self.initial_capital
+        self.used_capital = 0.0
+        self.open_positions = []
         
         # Step 1: Get stock universe
         stock_list, sector_dict = self.get_expanded_stock_universe()
         
         # Step 2: Load/download data
-        print(f"\n📊 Loading price data from {self.start_date.date()} to {self.end_date.date()}...")
+        print(f"\nLoading price data from {self.start_date.date()} to {self.end_date.date()}...")
         success = self.load_or_download_data(stock_list)
         if not success:
-            print("❌ Failed to load sufficient data for backtesting")
+            print("Failed to load sufficient data for backtesting")
             return
         
-        print(f"✅ Loaded data for {self.price_data.shape[1]} stocks, {self.price_data.shape[0]} trading days")
+        print(f"Loaded data for {self.price_data.shape[1]} stocks, {self.price_data.shape[0]} trading days")
         
         # Step 3: Find cointegrated pairs
-        print(f"\n🔍 Searching for cointegrated pairs...")
+        print(f"\nSearching for cointegrated pairs...")
         pairs = self.find_cointegrated_pairs(sector_dict)
         if not pairs:
-            print("❌ No cointegrated pairs found")
+            print("No cointegrated pairs found")
             return
         
         self.pairs = pairs
-        print(f"✅ Found {len(pairs)} cointegrated pairs for trading")
+        print(f"Found {len(pairs)} cointegrated pairs for trading")
         
-        # Step 4: Backtest each pair
-        print(f"\n📈 Running individual pair backtests...")
+        # Step 4: Backtest each pair with proper capital management
+        print(f"\nRunning individual pair backtests with capital constraints...")
         self.all_trades = []
         self.pair_results = {}
         
@@ -617,12 +647,12 @@ class CointegrationPairsTrader:
                 
                 if trades:
                     total_pnl = sum([t['pnl'] for t in trades])
-                    print(f"    → {len(trades)} trades, ${total_pnl:.0f} total P&L")
+                    print(f"    -> {len(trades)} trades, ${total_pnl:.0f} total P&L")
                 else:
-                    print(f"    → No trades generated")
+                    print(f"    -> No trades generated")
                     
             except Exception as e:
-                print(f"    → Error backtesting {pair_name}: {e}")
+                print(f"    -> Error backtesting {pair_name}: {e}")
                 self.pair_results[pair_name] = {
                     'trades': [],
                     'z_score': pd.Series(dtype=float),
@@ -632,16 +662,16 @@ class CointegrationPairsTrader:
                 }
         
         # Step 5: Calculate and display results
-        print(f"\n📊 Calculating performance metrics...")
+        print(f"\nCalculating performance metrics...")
         self.calculate_performance()
         
         if self.all_trades:
-            print(f"\n✅ Backtest completed successfully!")
+            print(f"\nBacktest completed successfully!")
             print(f"Total pairs tested: {len(pairs)}")
             print(f"Total trades executed: {len(self.all_trades)}")
             print(f"Date range: {self.start_date.date()} to {self.end_date.date()}")
         else:
-            print(f"\n⚠️  Backtest completed but no trades were executed")
+            print(f"\nBacktest completed but no trades were executed")
             print("Consider adjusting strategy parameters (thresholds, lookback window, etc.)")
     
     def plot_results(self):
@@ -677,7 +707,7 @@ class CointegrationPairsTrader:
         # 3. Win Rate by Pair
         pair_stats = {}
         for pair_name, result in self.pair_results.items():
-            if result['trades'] and len(result['trades']) >= 3:  # At least 3 trades
+            if result['trades'] and len(result['trades']) >= 3:
                 wins = len([t for t in result['trades'] if t['pnl'] > 0])
                 total = len(result['trades'])
                 pair_stats[pair_name] = wins / total * 100
@@ -749,7 +779,6 @@ class CointegrationPairsTrader:
         
         # 6. Z-Score example (best performing pair)
         if self.pair_results:
-            # Find best performing pair
             best_pair = None
             best_pnl = float('-inf')
             
@@ -798,7 +827,6 @@ class CointegrationPairsTrader:
         
         plt.tight_layout()
         plt.show()
-
     
     def print_detailed_trades(self, n=10):
         """Print top n and worst trades with dollar and percent P&L."""
@@ -839,8 +867,6 @@ class CointegrationPairsTrader:
                 print(f"{tr['pair']:<12} | Entry: {entry_date} | Exit: {exit_date} | "
                       f"P&L: ${tr['pnl']:>8.2f} ({pct:>6.2%}) | Held: {tr['days_held']:>3}d | "
                       f"Reason: {tr.get('exit_reason', 'N/A')}")
-
-
     
     def print_strategy_analysis(self):
         """Print detailed strategy analysis"""
@@ -925,6 +951,7 @@ class CointegrationPairsTrader:
                       f"${stats['avg_pnl']:>6.0f} avg, {stats['win_rate']:>5.1%} win, {stats['avg_days']:>4.0f} days")
         else:
             print("No pairs with 3+ trades found.")
+            
     def monte_carlo_simulation(self, n_simulations=1000, random_seed=42):
         """
         Run a Monte Carlo simulation by resampling trade P&L with replacement
