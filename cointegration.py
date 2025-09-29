@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import scipy.stats as stats
 import time
 import random
+from bayes_opt import BayesianOptimization
 
 warnings.filterwarnings('ignore')
 
@@ -381,7 +382,95 @@ class CointegrationPairsTrader:
         """Free up capital when closing a position"""
         self.cash += amount
         self.used_capital -= amount
-    
+
+    def objective_function(self, entry, exit):
+        """
+        Objective function for Bayesian Optimization.
+        It runs a backtest with the given entry/exit thresholds and returns the total P&L.
+        """
+
+        # Heavily penalize of entry >= exit
+        if exit >= entry:
+            return -1e9
+        
+        # Store original thresholds to restore them later
+        original_entry = self.entry_threshold
+        original_exit = self.exit_threshold
+
+        # Set new thresholds for this optimization iteration
+        self.entry_threshold = entry
+        self.exit_threshold = exit
+
+        # Reset capital to ensure a fair comparison
+        self.cash = self.initial_capital
+        self.used_capital = 0.0
+        self.open_positions = []
+
+        all_trades_this_run = []
+
+        # Loop through the pre-selected pairs and run a backtest for each
+        for pair_info in self.pairs:
+            trades, _, _, _ = self.backtest_pair(pair_info)
+            if trades:
+                all_trades_this_run.extend(trades)
+
+        # Restore original thresholds
+        self.entry_threshold = original_entry
+        self.exit_threshold = original_exit
+        
+        if not all_trades_this_run:
+            return 0.0
+
+        total_pnl = sum(t['pnl'] for t in all_trades_this_run)
+        
+        # Ensure a valid number is returned
+        return total_pnl if not np.isnan(total_pnl) else 0.0
+
+    def optimize_parameters(self):
+        """
+        Use Bayesian Optimization to find the best entry and exit thresholds.
+        """
+        if not self.pairs:
+            print("Cannot run optimization without cointegrated pairs. Find pairs first.")
+            return
+        print("\n" + "=" * 80)
+        print("STARTING BAYESIAN OPTIMIZATION FOR ENTRY/EXIT THRESHOLDS")
+        print("=" * 80)
+        
+        # Define the parameter space (pbounds) for the optimizer
+        pbounds = {
+            'entry': (1.5, 3.5),  # Explore entry Z-scores between 1.5 and 3.5
+            'exit': (0.1, 1.4)    # Explore exit Z-scores between 0.1 and 1.4
+        }
+
+        optimizer = BayesianOptimization(
+            f=self.objective_function,
+            pbounds=pbounds,
+            random_state=42,
+            verbose=2  # 2 prints all steps, 1 prints only improvements
+        )
+
+        optimizer.maximize(
+            init_points=5,  # Number of random exploration steps
+            n_iter=15       # Number of optimization steps
+        )
+
+        # Get the best parameters found
+        best_params = optimizer.max['params']
+        best_entry = best_params['entry']
+        best_exit = best_params['exit']
+
+        print("\n" + "=" * 80)
+        print("OPTIMIZATION COMPLETE")
+        print(f"Optimal Entry Threshold: {best_entry:.4f}")
+        print(f"Optimal Exit Threshold: {best_exit:.4f}")
+        print(f"Best P&L found during optimization: ${optimizer.max['target']:,.2f}")
+        print("=" * 80)
+
+        # Update the class attributes with the new optimal values
+        self.entry_threshold = best_entry
+        self.exit_threshold = best_exit
+
     def backtest_pair(self, pair_info, lookback_window=20):
         """
         Backtest a single cointegrated pair with share-based sizing, capital tracking,
@@ -621,13 +710,18 @@ class CointegrationPairsTrader:
         
         self.pairs = pairs
         print(f"Found {len(pairs)} cointegrated pairs for trading")
+
+        # Step 4: Optimize strategy parameters using Bayesian Optimization
+        self.optimize_parameters()
         
-        # Step 4: Backtest each pair with proper capital management
-        print(f"\nRunning individual pair backtests with capital constraints...")
+        # Step 5: Backtest each pair with the now-optimized parameters
+
+        print(f"\nRunning FINAL backtest with optimized parameters...")
+
         self.all_trades = []
         self.pair_results = {}
         
-        for i, pair in enumerate(pairs):
+        for i, pair in enumerate(self.pairs):
             pair_name = f"{pair['stock1']}-{pair['stock2']}"
             print(f"  Testing pair {i+1}/{len(pairs)}: {pair_name}")
             
@@ -951,6 +1045,8 @@ class CointegrationPairsTrader:
                       f"${stats['avg_pnl']:>6.0f} avg, {stats['win_rate']:>5.1%} win, {stats['avg_days']:>4.0f} days")
         else:
             print("No pairs with 3+ trades found.")
+
+    
             
     def monte_carlo_simulation(self, n_simulations=1000, random_seed=42):
         """
