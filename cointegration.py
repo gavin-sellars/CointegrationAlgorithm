@@ -46,6 +46,9 @@ class CointegrationPairsTrader:
         self.max_positions = 20      # Maximum concurrent positions
         
     def get_expanded_stock_universe(self):
+        """
+        Initialize stock universe
+        """
         stocks = {
             'Technology': [
                 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'ADBE', 'CRM',
@@ -128,7 +131,7 @@ class CointegrationPairsTrader:
     
     def load_or_download_data(self, stock_list, batch_size=10, delay=1.0, use_existing=True):
         """
-        Load existing data if available, or download new data if requested.
+        Load existing data if available, or download new data if requested
         """
         # Try to load existing pickle
         if os.path.exists(self.data_file):
@@ -198,7 +201,7 @@ class CointegrationPairsTrader:
 
     def find_cointegrated_pairs(self, sector_dict, max_pairs_to_test=5000):
         """
-        Efficiently find cointegrated pairs with sampling to manage computation
+        Find cointegrated pairs with sampling to manage computation
         """
         # Filter out columns with insufficient data
         min_data_points = 252  # 1 year of data
@@ -385,8 +388,8 @@ class CointegrationPairsTrader:
 
     def objective_function(self, entry, exit):
         """
-        Objective function for Bayesian Optimization.
-        It runs a backtest with the given entry/exit thresholds and returns the total P&L.
+        Objective function for Bayesian Optimization
+        Runs a backtest with the given entry/exit thresholds and returns the total P&L
         """
 
         # Heavily penalize of entry >= exit
@@ -428,7 +431,7 @@ class CointegrationPairsTrader:
 
     def optimize_parameters(self):
         """
-        Use Bayesian Optimization to find the best entry and exit thresholds.
+        Use Bayesian Optimization to find the best entry and exit thresholds
         """
         if not self.pairs:
             print("Cannot run optimization without cointegrated pairs. Find pairs first.")
@@ -473,8 +476,7 @@ class CointegrationPairsTrader:
 
     def backtest_pair(self, pair_info, lookback_window=20):
         """
-        Backtest a single cointegrated pair with share-based sizing, capital tracking,
-        warm-up period, spread threshold, and equity curve construction
+        Backtest a single cointegrated pair
         """
         stock1 = pair_info['stock1']
         stock2 = pair_info['stock2']
@@ -610,7 +612,7 @@ class CointegrationPairsTrader:
 
 
     def calculate_performance(self):
-        """Generate performance metrics based on trades."""
+        """Generate performance metrics based on trades"""
         if not self.all_trades:
             print("No trades to analyze.")
             return
@@ -679,7 +681,7 @@ class CointegrationPairsTrader:
         return drawdown.min()
 
     def run_backtest(self):
-        """Run the complete backtest process with proper capital management"""
+        """Run the complete backtest process"""
         print("=" * 80)
         print("STARTING COMPREHENSIVE COINTEGRATION PAIRS TRADING BACKTEST")
         print("=" * 80)
@@ -769,7 +771,7 @@ class CointegrationPairsTrader:
             print("Consider adjusting strategy parameters (thresholds, lookback window, etc.)")
     
     def plot_results(self):
-        """Create comprehensive visualizations"""
+        """Create analystics suite plots"""
         if not self.all_trades:
             print("No trades to visualize!")
             return
@@ -923,7 +925,7 @@ class CointegrationPairsTrader:
         plt.show()
     
     def print_detailed_trades(self, n=10):
-        """Print top n and worst trades with dollar and percent P&L."""
+        """Print top n and worst trades with dollar and percent P&L"""
         if not self.all_trades:
             print("No trades executed.")
             return
@@ -1051,7 +1053,7 @@ class CointegrationPairsTrader:
     def monte_carlo_simulation(self, n_simulations=1000, random_seed=42):
         """
         Run a Monte Carlo simulation by resampling trade P&L with replacement
-        to assess strategy robustness. Produces summary statistics and plots.
+        to assess strategy robustness
         """
         if not self.all_trades:
             print("No trades available for Monte Carlo simulation.")
